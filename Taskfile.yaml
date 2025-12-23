@@ -1,0 +1,74 @@
+version: '3'
+
+tasks:
+  default:
+    desc: List all available tasks
+    cmds:
+      - task --list-all
+
+  setup:
+    desc: Run the multi-cluster Istio setup script
+    cmds:
+      - chmod +x ./setup-clusters.sh
+      - ./setup-clusters.sh
+
+  kind-cloud-provider:
+    desc: Run the kind cloud provider process
+    cmds:
+      - cloud-provider-kind
+
+  create-cluster1:
+    desc: Create cluster1 Kind cluster
+    cmds:
+      - kind create cluster --name cluster1 --config kind-config.yaml
+
+  create-cluster2:
+    desc: Create cluster2 Kind cluster
+    cmds:
+      - kind create cluster --name cluster2 --config kind-config-remote.yaml
+
+  delete-clusters:
+    desc: Delete both Kind clusters
+    cmds:
+      - kind delete cluster --name cluster1 || true
+      - kind delete cluster --name cluster2 || true
+
+  get-contexts:
+    desc: List kubectl contexts
+    cmds:
+      - kubectl config get-contexts
+
+  verify-mesh:
+    desc: Verify the multi-cluster mesh
+    cmds:
+      - istioctl remote-clusters --context kind-cluster1
+
+  clean:
+    desc: Clean up all clusters and resources
+    cmds:
+      - kind delete cluster --name cluster1 || true
+      - kind delete cluster --name cluster2 || true
+      - kubectl config delete-context kind-cluster1 || true
+      - kubectl config delete-context kind-cluster2 || true
+
+  install-istioctl:
+    desc: Install istioctl using the official installer
+    cmds:
+      - curl -L https://istio.io/downloadIstio | sh -
+
+  uninstall-istioctl:
+    desc: Uninstall istioctl from clusters and remove local files
+    cmds:
+      - rm -rf istio-* || true
+
+  deploy-nginx:
+    desc: Deploy nginx on remote cluster and test cross-cluster connectivity
+    cmds:
+      - chmod +x ./deploy-nginx.sh
+      - ./deploy-nginx.sh
+
+  clean-nginx:
+    desc: Clean up nginx demo deployment from both clusters
+    cmds:
+      - kubectl delete namespace demo --context kind-cluster1 || true
+      - kubectl delete namespace demo --context kind-cluster2 || true

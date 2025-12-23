@@ -1,0 +1,35 @@
+# Istio downloads
+istio-*/
+
+# Kubernetes configs (may contain sensitive data)
+*.kubeconfig
+kubeconfig
+
+# Editor files
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# macOS
+.DS_Store
+
+# Logs
+*.log
+
+# Temporary files
+tmp/
+temp/
+*.tmp
+
+# Environment files
+.env
+.env.local
+.env.*.local
+
+# Certificates and keys (if any)
+*.pem
+*.key
+*.crt
+*.csr
