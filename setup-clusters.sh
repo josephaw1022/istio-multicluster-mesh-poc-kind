@@ -272,7 +272,7 @@ spec:
       meshID: mesh1
       multiCluster:
         clusterName: cluster2
-      network: network2
+      network: network1
       remotePilotAddress: ${DISCOVERY_ADDRESS}
 EOF
 
