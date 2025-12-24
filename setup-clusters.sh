@@ -193,6 +193,22 @@ cat <<EOF | istioctl install --context="${CTX_CLUSTER1}" -y -f -
 apiVersion: install.istio.io/v1alpha1
 kind: IstioOperator
 spec:
+  components:
+    ingressGateways:
+      - name: istio-ingressgateway
+        enabled: true
+        k8s:
+          service:
+            type: NodePort
+            ports:
+              - name: http2
+                port: 80
+                targetPort: 8080
+                nodePort: 30080
+              - name: https
+                port: 443
+                targetPort: 8443
+                nodePort: 30443
   values:
     global:
       meshID: mesh1
@@ -338,6 +354,29 @@ istioctl remote-clusters --context="${CTX_CLUSTER1}"
 log_info "Enabling sidecar injection on default namespace for both clusters..."
 kubectl label namespace default istio-injection=enabled --overwrite --context "${CTX_CLUSTER1}"
 kubectl label namespace default istio-injection=enabled --overwrite --context "${CTX_CLUSTER2}"
+
+# ============================================================================
+# STEP 14: Create Gateway for *.localhost
+# ============================================================================
+log_info "Creating Gateway for *.localhost on ${CLUSTER1}..."
+
+cat <<EOF | kubectl apply -f - --context "${CTX_CLUSTER1}"
+apiVersion: networking.istio.io/v1
+kind: Gateway
+metadata:
+  name: localhost-gateway
+  namespace: istio-system
+spec:
+  selector:
+    istio: ingressgateway
+  servers:
+    - port:
+        number: 80
+        name: http
+        protocol: HTTP
+      hosts:
+        - "*.localhost"
+EOF
 
 # ============================================================================
 # Summary
