@@ -29,7 +29,6 @@ CTX_CLUSTER2="kind-${CLUSTER2}"
 
 # Versions
 ISTIO_VERSION="1.28.2"
-ISTIO_DIR="${HOME}/istio-${ISTIO_VERSION}"
 
 # ============================================================================
 # STEP 0: Pull Istio images if not present locally
@@ -226,10 +225,47 @@ kubectl rollout status deployment/istiod -n istio-system --timeout=300s --contex
 # ============================================================================
 log_info "Installing east-west gateway on ${CLUSTER1}..."
 
-# Use the gen-eastwest-gateway.sh script from Istio samples
-"${ISTIO_DIR}/samples/multicluster/gen-eastwest-gateway.sh" \
-    --mesh mesh1 --cluster cluster1 --network network1 | \
-    istioctl --context="${CTX_CLUSTER1}" install -y -f -
+cat <<EOF | istioctl --context="${CTX_CLUSTER1}" install -y -f -
+apiVersion: install.istio.io/v1alpha1
+kind: IstioOperator
+metadata:
+  name: eastwest
+spec:
+  revision: ""
+  profile: empty
+  components:
+    ingressGateways:
+      - name: istio-eastwestgateway
+        label:
+          istio: eastwestgateway
+          app: istio-eastwestgateway
+          topology.istio.io/network: network1
+        enabled: true
+        k8s:
+          env:
+            - name: ISTIO_META_REQUESTED_NETWORK_VIEW
+              value: network1
+          service:
+            ports:
+              - name: status-port
+                port: 15021
+                targetPort: 15021
+              - name: tls
+                port: 15443
+                targetPort: 15443
+              - name: tls-istiod
+                port: 15012
+                targetPort: 15012
+              - name: tls-webhook
+                port: 15017
+                targetPort: 15017
+  values:
+    gateways:
+      istio-ingressgateway:
+        injectionTemplate: gateway
+    global:
+      network: network1
+EOF
 
 log_info "Waiting for east-west gateway to get an external IP..."
 kubectl --context="${CTX_CLUSTER1}" wait --for=jsonpath='{.status.loadBalancer.ingress[0].ip}' \
@@ -242,16 +278,85 @@ kubectl --context="${CTX_CLUSTER1}" get svc istio-eastwestgateway -n istio-syste
 # ============================================================================
 log_info "Exposing control plane in ${CLUSTER1}..."
 
-kubectl apply --context="${CTX_CLUSTER1}" -n istio-system -f \
-    "${ISTIO_DIR}/samples/multicluster/expose-istiod.yaml"
+cat <<EOF | kubectl apply --context="${CTX_CLUSTER1}" -n istio-system -f -
+apiVersion: networking.istio.io/v1
+kind: Gateway
+metadata:
+  name: istiod-gateway
+spec:
+  selector:
+    istio: eastwestgateway
+  servers:
+    - port:
+        name: tls-istiod
+        number: 15012
+        protocol: tls
+      tls:
+        mode: PASSTHROUGH
+      hosts:
+        - "*"
+    - port:
+        name: tls-istiodwebhook
+        number: 15017
+        protocol: tls
+      tls:
+        mode: PASSTHROUGH
+      hosts:
+        - "*"
+---
+apiVersion: networking.istio.io/v1
+kind: VirtualService
+metadata:
+  name: istiod-vs
+spec:
+  hosts:
+  - "*"
+  gateways:
+  - istiod-gateway
+  tls:
+  - match:
+    - port: 15012
+      sniHosts:
+      - "*"
+    route:
+    - destination:
+        host: istiod.istio-system.svc.cluster.local
+        port:
+          number: 15012
+  - match:
+    - port: 15017
+      sniHosts:
+      - "*"
+    route:
+    - destination:
+        host: istiod.istio-system.svc.cluster.local
+        port:
+          number: 443
+EOF
 
 # ============================================================================
 # STEP 8.5: Expose services via east-west gateway
 # ============================================================================
 log_info "Exposing services via east-west gateway in ${CLUSTER1}..."
 
-kubectl apply --context="${CTX_CLUSTER1}" -n istio-system -f \
-    "${ISTIO_DIR}/samples/multicluster/expose-services.yaml"
+cat <<EOF | kubectl apply --context="${CTX_CLUSTER1}" -n istio-system -f -
+apiVersion: networking.istio.io/v1
+kind: Gateway
+metadata:
+  name: cross-network-gateway
+spec:
+  selector:
+    istio: eastwestgateway
+  servers:
+    - port:
+        number: 15443
+        name: tls
+        protocol: TLS
+      tls:
+        mode: AUTO_PASSTHROUGH
+      hosts:
+        - "*.local"
+EOF
 
 # ============================================================================
 # STEP 9: Set the control plane cluster for cluster2 (per Istio docs)
@@ -313,9 +418,47 @@ istioctl create-remote-secret \
 # ============================================================================
 log_info "Installing east-west gateway on ${CLUSTER2}..."
 
-"${ISTIO_DIR}/samples/multicluster/gen-eastwest-gateway.sh" \
-    --mesh mesh1 --cluster cluster2 --network network2 | \
-    istioctl --context="${CTX_CLUSTER2}" install -y -f -
+cat <<EOF | istioctl --context="${CTX_CLUSTER2}" install -y -f -
+apiVersion: install.istio.io/v1alpha1
+kind: IstioOperator
+metadata:
+  name: eastwest
+spec:
+  revision: ""
+  profile: empty
+  components:
+    ingressGateways:
+      - name: istio-eastwestgateway
+        label:
+          istio: eastwestgateway
+          app: istio-eastwestgateway
+          topology.istio.io/network: network2
+        enabled: true
+        k8s:
+          env:
+            - name: ISTIO_META_REQUESTED_NETWORK_VIEW
+              value: network2
+          service:
+            ports:
+              - name: status-port
+                port: 15021
+                targetPort: 15021
+              - name: tls
+                port: 15443
+                targetPort: 15443
+              - name: tls-istiod
+                port: 15012
+                targetPort: 15012
+              - name: tls-webhook
+                port: 15017
+                targetPort: 15017
+  values:
+    gateways:
+      istio-ingressgateway:
+        injectionTemplate: gateway
+    global:
+      network: network2
+EOF
 
 log_info "Waiting for east-west gateway to get an external IP on ${CLUSTER2}..."
 kubectl --context="${CTX_CLUSTER2}" wait --for=jsonpath='{.status.loadBalancer.ingress[0].ip}' \
@@ -328,8 +471,24 @@ kubectl --context="${CTX_CLUSTER2}" get svc istio-eastwestgateway -n istio-syste
 # ============================================================================
 log_info "Exposing services via east-west gateway in ${CLUSTER2}..."
 
-kubectl apply --context="${CTX_CLUSTER2}" -n istio-system -f \
-    "${ISTIO_DIR}/samples/multicluster/expose-services.yaml"
+cat <<EOF | kubectl apply --context="${CTX_CLUSTER2}" -n istio-system -f -
+apiVersion: networking.istio.io/v1
+kind: Gateway
+metadata:
+  name: cross-network-gateway
+spec:
+  selector:
+    istio: eastwestgateway
+  servers:
+    - port:
+        number: 15443
+        name: tls
+        protocol: TLS
+      tls:
+        mode: AUTO_PASSTHROUGH
+      hosts:
+        - "*.local"
+EOF
 
 # ============================================================================
 # STEP 12: Verify Installation
