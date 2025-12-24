@@ -22,10 +22,12 @@ log_error() {
 # Cluster names (matching Istio docs naming convention)
 CLUSTER1="cluster1"
 CLUSTER2="cluster2"
+CLUSTER3="cluster3"
 
 # Context names (kind prefixes contexts with "kind-")
 CTX_CLUSTER1="kind-${CLUSTER1}"
 CTX_CLUSTER2="kind-${CLUSTER2}"
+CTX_CLUSTER3="kind-${CLUSTER3}"
 
 # Versions
 ISTIO_VERSION="1.28.2"
@@ -74,6 +76,21 @@ kind load docker-image docker.io/istio/pilot:${ISTIO_VERSION} --name "${CLUSTER2
 kind load docker-image docker.io/istio/proxyv2:${ISTIO_VERSION} --name "${CLUSTER2}"
 
 # ============================================================================
+# STEP 2.5: Create cluster3 (Remote)
+# ============================================================================
+log_info "Creating ${CLUSTER3} Kind cluster..."
+if kind get clusters | grep -q "^${CLUSTER3}$"; then
+    log_warn "Cluster ${CLUSTER3} already exists, skipping creation"
+else
+    kind create cluster --name "${CLUSTER3}" --config kind-config-remote.yaml
+fi
+
+# Load Istio images into cluster3
+log_info "Loading Istio images into ${CLUSTER3}..."
+kind load docker-image docker.io/istio/pilot:${ISTIO_VERSION} --name "${CLUSTER3}"
+kind load docker-image docker.io/istio/proxyv2:${ISTIO_VERSION} --name "${CLUSTER3}"
+
+# ============================================================================
 # STEP 3: Pull and load MetalLB images
 # ============================================================================
 METALLB_VERSION="v0.14.9"
@@ -101,6 +118,11 @@ kind load docker-image quay.io/metallb/controller:${METALLB_VERSION} --name "${C
 kind load docker-image quay.io/metallb/speaker:${METALLB_VERSION} --name "${CLUSTER2}"
 kind load docker-image quay.io/frrouting/frr:9.1.0 --name "${CLUSTER2}"
 
+log_info "Loading MetalLB images into ${CLUSTER3}..."
+kind load docker-image quay.io/metallb/controller:${METALLB_VERSION} --name "${CLUSTER3}"
+kind load docker-image quay.io/metallb/speaker:${METALLB_VERSION} --name "${CLUSTER3}"
+kind load docker-image quay.io/frrouting/frr:9.1.0 --name "${CLUSTER3}"
+
 # ============================================================================
 # STEP 4: Install MetalLB on cluster1
 # ============================================================================
@@ -122,7 +144,17 @@ kubectl wait --for=condition=available deployment/controller -n metallb-system -
 kubectl rollout status daemonset/speaker -n metallb-system --timeout=300s --context "${CTX_CLUSTER2}"
 
 # ============================================================================
-# STEP 6: Configure MetalLB IP pools for both clusters
+# STEP 5.5: Install MetalLB on cluster3
+# ============================================================================
+log_info "Installing MetalLB on ${CLUSTER3}..."
+kubectl apply -f https://raw.githubusercontent.com/metallb/metallb/${METALLB_VERSION}/config/manifests/metallb-native.yaml --context "${CTX_CLUSTER3}"
+
+log_info "Waiting for MetalLB controller to be ready on ${CLUSTER3}..."
+kubectl wait --for=condition=available deployment/controller -n metallb-system --timeout=300s --context "${CTX_CLUSTER3}"
+kubectl rollout status daemonset/speaker -n metallb-system --timeout=300s --context "${CTX_CLUSTER3}"
+
+# ============================================================================
+# STEP 6: Configure MetalLB IP pools for all clusters
 # ============================================================================
 log_info "Detecting kind network IP range..."
 KIND_SUBNET=$(podman network inspect kind | jq -r '.[0].subnets[] | select(.subnet | test("^[0-9]")) | .subnet')
@@ -135,11 +167,13 @@ fi
 log_info "Kind network subnet: ${KIND_SUBNET}"
 SUBNET_BASE=$(echo "${KIND_SUBNET}" | cut -d'/' -f1 | cut -d'.' -f1-3)
 
-# cluster1 gets .200-.220, cluster2 gets .221-.240
+# cluster1 gets .200-.220, cluster2 gets .221-.240, cluster3 gets .241-.250
 CLUSTER1_RANGE_START="${SUBNET_BASE}.200"
 CLUSTER1_RANGE_END="${SUBNET_BASE}.220"
 CLUSTER2_RANGE_START="${SUBNET_BASE}.221"
 CLUSTER2_RANGE_END="${SUBNET_BASE}.240"
+CLUSTER3_RANGE_START="${SUBNET_BASE}.241"
+CLUSTER3_RANGE_END="${SUBNET_BASE}.250"
 
 log_info "Configuring MetalLB on ${CLUSTER1} with range ${CLUSTER1_RANGE_START}-${CLUSTER1_RANGE_END}..."
 cat <<EOF | kubectl apply -f - --context "${CTX_CLUSTER1}"
@@ -172,6 +206,27 @@ metadata:
 spec:
   addresses:
     - ${CLUSTER2_RANGE_START}-${CLUSTER2_RANGE_END}
+---
+apiVersion: metallb.io/v1beta1
+kind: L2Advertisement
+metadata:
+  name: kind-l2
+  namespace: metallb-system
+spec:
+  ipAddressPools:
+    - kind-pool
+EOF
+
+log_info "Configuring MetalLB on ${CLUSTER3} with range ${CLUSTER3_RANGE_START}-${CLUSTER3_RANGE_END}..."
+cat <<EOF | kubectl apply -f - --context "${CTX_CLUSTER3}"
+apiVersion: metallb.io/v1beta1
+kind: IPAddressPool
+metadata:
+  name: kind-pool
+  namespace: metallb-system
+spec:
+  addresses:
+    - ${CLUSTER3_RANGE_START}-${CLUSTER3_RANGE_END}
 ---
 apiVersion: metallb.io/v1beta1
 kind: L2Advertisement
@@ -491,7 +546,130 @@ spec:
 EOF
 
 # ============================================================================
-# STEP 12: Verify Installation
+# STEP 12: Set the control plane cluster for cluster3 (per Istio docs)
+# ============================================================================
+log_info "Setting control plane cluster for ${CLUSTER3}..."
+
+kubectl --context="${CTX_CLUSTER3}" create namespace istio-system || true
+kubectl --context="${CTX_CLUSTER3}" annotate namespace istio-system \
+    topology.istio.io/controlPlaneClusters=cluster1 --overwrite
+
+# ============================================================================
+# STEP 12.1: Configure cluster3 as a remote (per Istio docs)
+# ============================================================================
+log_info "Configuring ${CLUSTER3} as remote..."
+
+cat <<EOF | istioctl install --context="${CTX_CLUSTER3}" -y -f -
+apiVersion: install.istio.io/v1alpha1
+kind: IstioOperator
+spec:
+  profile: remote
+  values:
+    istiodRemote:
+      injectionPath: /inject/cluster/cluster3/net/network3
+    global:
+      meshID: mesh1
+      multiCluster:
+        clusterName: cluster3
+      network: network3
+      remotePilotAddress: ${DISCOVERY_ADDRESS}
+EOF
+
+# ============================================================================
+# STEP 12.2: Attach cluster3 as a remote cluster of cluster1 (per Istio docs)
+# ============================================================================
+log_info "Attaching ${CLUSTER3} as remote cluster of ${CLUSTER1}..."
+
+# Get cluster3's control-plane IP (not localhost) so cluster1's istiod can reach it
+CLUSTER3_API_SERVER="https://$(podman network inspect kind | jq -r '.[0].containers | to_entries[] | select(.value.name == "cluster3-control-plane") | .value.interfaces.eth0.subnets[] | select(.ipnet | test("^10")) | .ipnet' | cut -d'/' -f1):6443"
+
+log_info "Using cluster3 API server: ${CLUSTER3_API_SERVER}"
+
+istioctl create-remote-secret \
+    --context="${CTX_CLUSTER3}" \
+    --name=cluster3 \
+    --server="${CLUSTER3_API_SERVER}" | \
+    kubectl apply -f - --context="${CTX_CLUSTER1}"
+
+# ============================================================================
+# STEP 12.3: Install east-west gateway on cluster3 (for bidirectional traffic)
+# ============================================================================
+log_info "Installing east-west gateway on ${CLUSTER3}..."
+
+cat <<EOF | istioctl --context="${CTX_CLUSTER3}" install -y -f -
+apiVersion: install.istio.io/v1alpha1
+kind: IstioOperator
+metadata:
+  name: eastwest
+spec:
+  revision: ""
+  profile: empty
+  components:
+    ingressGateways:
+      - name: istio-eastwestgateway
+        label:
+          istio: eastwestgateway
+          app: istio-eastwestgateway
+          topology.istio.io/network: network3
+        enabled: true
+        k8s:
+          env:
+            - name: ISTIO_META_REQUESTED_NETWORK_VIEW
+              value: network3
+          service:
+            ports:
+              - name: status-port
+                port: 15021
+                targetPort: 15021
+              - name: tls
+                port: 15443
+                targetPort: 15443
+              - name: tls-istiod
+                port: 15012
+                targetPort: 15012
+              - name: tls-webhook
+                port: 15017
+                targetPort: 15017
+  values:
+    gateways:
+      istio-ingressgateway:
+        injectionTemplate: gateway
+    global:
+      network: network3
+EOF
+
+log_info "Waiting for east-west gateway to get an external IP on ${CLUSTER3}..."
+kubectl --context="${CTX_CLUSTER3}" wait --for=jsonpath='{.status.loadBalancer.ingress[0].ip}' \
+    svc/istio-eastwestgateway -n istio-system --timeout=300s || true
+
+kubectl --context="${CTX_CLUSTER3}" get svc istio-eastwestgateway -n istio-system
+
+# ============================================================================
+# STEP 12.4: Expose services via east-west gateway on cluster3
+# ============================================================================
+log_info "Exposing services via east-west gateway in ${CLUSTER3}..."
+
+cat <<EOF | kubectl apply --context="${CTX_CLUSTER3}" -n istio-system -f -
+apiVersion: networking.istio.io/v1
+kind: Gateway
+metadata:
+  name: cross-network-gateway
+spec:
+  selector:
+    istio: eastwestgateway
+  servers:
+    - port:
+        number: 15443
+        name: tls
+        protocol: TLS
+      tls:
+        mode: AUTO_PASSTHROUGH
+      hosts:
+        - "*.local"
+EOF
+
+# ============================================================================
+# STEP 13: Verify Installation
 # ============================================================================
 log_info "Verifying multi-cluster installation..."
 
@@ -504,15 +682,20 @@ log_info "${CLUSTER2} (Remote) Status:"
 kubectl get pods -n istio-system --context "${CTX_CLUSTER2}"
 
 echo ""
+log_info "${CLUSTER3} (Remote) Status:"
+kubectl get pods -n istio-system --context "${CTX_CLUSTER3}"
+
+echo ""
 log_info "Verifying remote clusters..."
 istioctl remote-clusters --context="${CTX_CLUSTER1}"
 
 # ============================================================================
-# STEP 13: Enable Sidecar Injection
+# STEP 14: Enable Sidecar Injection
 # ============================================================================
-log_info "Enabling sidecar injection on default namespace for both clusters..."
+log_info "Enabling sidecar injection on default namespace for all clusters..."
 kubectl label namespace default istio-injection=enabled --overwrite --context "${CTX_CLUSTER1}"
 kubectl label namespace default istio-injection=enabled --overwrite --context "${CTX_CLUSTER2}"
+kubectl label namespace default istio-injection=enabled --overwrite --context "${CTX_CLUSTER3}"
 
 # ============================================================================
 # STEP 14: Create Gateway for *.localhost
@@ -545,14 +728,16 @@ echo "==========================================================================
 log_info "Multi-cluster Istio setup complete!"
 echo "============================================================================"
 echo ""
-echo "Primary Cluster: ${CTX_CLUSTER1}"
-echo "Remote Cluster:  ${CTX_CLUSTER2}"
+echo "Primary Cluster:  ${CTX_CLUSTER1}"
+echo "Remote Cluster 1: ${CTX_CLUSTER2}"
+echo "Remote Cluster 2: ${CTX_CLUSTER3}"
 echo ""
 echo "East-West Gateway IP: ${DISCOVERY_ADDRESS}"
 echo ""
 echo "To switch contexts:"
 echo "  kubectl config use-context ${CTX_CLUSTER1}"
 echo "  kubectl config use-context ${CTX_CLUSTER2}"
+echo "  kubectl config use-context ${CTX_CLUSTER3}"
 echo ""
 echo "To verify the mesh:"
 echo "  istioctl remote-clusters --context ${CTX_CLUSTER1}"

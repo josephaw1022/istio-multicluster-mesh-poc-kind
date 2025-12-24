@@ -27,11 +27,17 @@ tasks:
     cmds:
       - kind create cluster --name cluster2 --config kind-config-remote.yaml
 
+  create-cluster3:
+    desc: Create cluster3 Kind cluster
+    cmds:
+      - kind create cluster --name cluster3 --config kind-config-remote.yaml
+
   delete-clusters:
-    desc: Delete both Kind clusters
+    desc: Delete all Kind clusters
     cmds:
       - kind delete cluster --name cluster1 || true
       - kind delete cluster --name cluster2 || true
+      - kind delete cluster --name cluster3 || true
 
   get-contexts:
     desc: List kubectl contexts
@@ -48,6 +54,7 @@ tasks:
     cmds:
       - kind delete cluster --name cluster1 || true
       - kind delete cluster --name cluster2 || true
+      - kind delete cluster --name cluster3 || true
 
   install-istioctl:
     desc: Install istioctl using the official installer
@@ -66,10 +73,11 @@ tasks:
       - ./deploy-nginx.sh
 
   clean-nginx:
-    desc: Clean up namespaces created in both clusters for nginx deployment
+    desc: Clean up namespaces created in all clusters for nginx deployment
     cmds:
       - kubectl delete namespace sample --context kind-cluster1 --interactive=false || true
       - kubectl delete namespace sample --context kind-cluster2 --interactive=false || true
+      - kubectl delete namespace sample --context kind-cluster3 --interactive=false || true
 
   kiali-setup:
     desc: Install Prometheus and Kiali addons for Istio
