@@ -72,3 +72,17 @@ tasks:
     cmds:
       - kubectl delete namespace demo --context kind-cluster1 || true
       - kubectl delete namespace demo --context kind-cluster2 || true
+
+
+  verify-remote:
+    desc: Verify remote cluster connectivity
+    cmds:
+      - chmod +x ./verify-remote.sh
+      - ./verify-remote.sh
+
+  
+  clean-verify-remote:
+    desc: Clean up resources created during remote verification
+    cmds:
+      - kubectl delete namespace demo --context kind-cluster1 --interactive=false || true
+      - kubectl delete namespace demo --context kind-cluster2 --interactive=false || true

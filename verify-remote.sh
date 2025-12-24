@@ -120,6 +120,6 @@ echo ""
 echo "If you see v2 responses, cross-cluster connectivity is working!"
 echo ""
 echo "To clean up:"
-echo "  kubectl delete namespace ${NAMESPACE} --context=${CTX_CLUSTER1}"
-echo "  kubectl delete namespace ${NAMESPACE} --context=${CTX_CLUSTER2}"
+echo "  kubectl delete namespace ${NAMESPACE} --context=${CTX_CLUSTER1}" --validate=false
+echo "  kubectl delete namespace ${NAMESPACE} --context=${CTX_CLUSTER2}" --validate=false
 echo ""
