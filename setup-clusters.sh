@@ -272,7 +272,7 @@ spec:
       meshID: mesh1
       multiCluster:
         clusterName: cluster2
-      network: network1
+      network: network2
       remotePilotAddress: ${DISCOVERY_ADDRESS}
 EOF
 
@@ -291,6 +291,29 @@ istioctl create-remote-secret \
     --name=cluster2 \
     --server="${CLUSTER2_API_SERVER}" | \
     kubectl apply -f - --context="${CTX_CLUSTER1}"
+
+# ============================================================================
+# STEP 11.5: Install east-west gateway on cluster2 (for bidirectional traffic)
+# ============================================================================
+log_info "Installing east-west gateway on ${CLUSTER2}..."
+
+"${ISTIO_DIR}/samples/multicluster/gen-eastwest-gateway.sh" \
+    --mesh mesh1 --cluster cluster2 --network network2 | \
+    istioctl --context="${CTX_CLUSTER2}" install -y -f -
+
+log_info "Waiting for east-west gateway to get an external IP on ${CLUSTER2}..."
+kubectl --context="${CTX_CLUSTER2}" wait --for=jsonpath='{.status.loadBalancer.ingress[0].ip}' \
+    svc/istio-eastwestgateway -n istio-system --timeout=300s || true
+
+kubectl --context="${CTX_CLUSTER2}" get svc istio-eastwestgateway -n istio-system
+
+# ============================================================================
+# STEP 11.6: Expose services via east-west gateway on cluster2
+# ============================================================================
+log_info "Exposing services via east-west gateway in ${CLUSTER2}..."
+
+kubectl apply --context="${CTX_CLUSTER2}" -n istio-system -f \
+    "${ISTIO_DIR}/samples/multicluster/expose-services.yaml"
 
 # ============================================================================
 # STEP 12: Verify Installation
