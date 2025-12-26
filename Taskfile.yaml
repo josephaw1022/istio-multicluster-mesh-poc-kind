@@ -56,6 +56,53 @@ tasks:
       - kind delete cluster --name cluster2 || true
       - kind delete cluster --name cluster3 || true
 
+  clean-mesh:
+    desc: Uninstall MetalLB, Istio, and Kiali from all clusters (keeps Kind clusters)
+    cmds:
+      - task: clean-nginx
+      # Uninstall Kiali
+      - helm uninstall kiali-server -n istio-system --kube-context kind-cluster1 --wait || true
+      # Delete Prometheus resources
+      - kubectl delete deployment prometheus -n istio-system --context kind-cluster1 --interactive=false || true
+      - kubectl delete deployment prometheus -n istio-system --context kind-cluster2 --interactive=false || true
+      - kubectl delete deployment prometheus -n istio-system --context kind-cluster3 --interactive=false || true
+      - kubectl delete service prometheus -n istio-system --context kind-cluster1 --interactive=false || true
+      - kubectl delete service prometheus -n istio-system --context kind-cluster2 --interactive=false || true
+      - kubectl delete service prometheus -n istio-system --context kind-cluster3 --interactive=false || true
+      - kubectl delete configmap prometheus -n istio-system --context kind-cluster1 --interactive=false || true
+      - kubectl delete configmap prometheus -n istio-system --context kind-cluster2 --interactive=false || true
+      - kubectl delete configmap prometheus -n istio-system --context kind-cluster3 --interactive=false || true
+      - kubectl delete configmap prometheus-federation -n istio-system --context kind-cluster1 --interactive=false || true
+      # Delete Kiali remote cluster resources
+      - kubectl delete secret -l kiali.io/multiCluster=true -n istio-system --context kind-cluster1 --interactive=false || true
+      - kubectl delete namespace kiali-access-ns --context kind-cluster2 --interactive=false || true
+      - kubectl delete namespace kiali-access-ns --context kind-cluster3 --interactive=false || true
+      - kubectl delete clusterrole -l app.kubernetes.io/instance=kiali-remote-access --context kind-cluster2 --interactive=false || true
+      - kubectl delete clusterrole -l app.kubernetes.io/instance=kiali-remote-access --context kind-cluster3 --interactive=false || true
+      - kubectl delete clusterrolebinding kiali-remote-access --context kind-cluster2 --interactive=false || true
+      - kubectl delete clusterrolebinding kiali-remote-access --context kind-cluster3 --interactive=false || true
+      - rm -f kiali-prepare-remote-cluster.sh || true
+      # Uninstall Istio from all clusters
+      - istioctl uninstall --purge -y --context kind-cluster3 || true
+      - istioctl uninstall --purge -y --context kind-cluster2 || true
+      - istioctl uninstall --purge -y --context kind-cluster1 || true
+      # Delete Istio remote secrets
+      - kubectl delete secret istio-remote-secret-cluster2 -n istio-system --context kind-cluster1 --interactive=false || true
+      - kubectl delete secret istio-remote-secret-cluster3 -n istio-system --context kind-cluster1 --interactive=false || true
+      # Delete istio-system namespace from all clusters
+      - kubectl delete namespace istio-system --context kind-cluster1 --interactive=false || true
+      - kubectl delete namespace istio-system --context kind-cluster2 --interactive=false || true
+      - kubectl delete namespace istio-system --context kind-cluster3 --interactive=false || true
+      # Uninstall MetalLB from all clusters
+      - kubectl delete -f https://raw.githubusercontent.com/metallb/metallb/v0.14.9/config/manifests/metallb-native.yaml --context kind-cluster1 --interactive=false || true
+      - kubectl delete -f https://raw.githubusercontent.com/metallb/metallb/v0.14.9/config/manifests/metallb-native.yaml --context kind-cluster2 --interactive=false || true
+      - kubectl delete -f https://raw.githubusercontent.com/metallb/metallb/v0.14.9/config/manifests/metallb-native.yaml --context kind-cluster3 --interactive=false || true
+      # Delete metallb-system namespace from all clusters
+      - kubectl delete namespace metallb-system --context kind-cluster1 --interactive=false || true
+      - kubectl delete namespace metallb-system --context kind-cluster2 --interactive=false || true
+      - kubectl delete namespace metallb-system --context kind-cluster3 --interactive=false || true
+      - echo "Mesh components cleaned. Kind clusters are still running."
+
   install-istioctl:
     desc: Install istioctl using the official installer
     cmds:
@@ -85,7 +132,42 @@ tasks:
       - chmod +x ./kiali-setup.sh
       - ./kiali-setup.sh
 
+  kiali-clean:
+    desc: Clean up Kiali, Prometheus, and Grafana resources to allow re-running kiali-setup
+    cmds:
+      - helm uninstall kiali-server -n istio-system --kube-context kind-cluster1 --interactive=false || true
+      # Delete Grafana resources
+      - kubectl delete deployment grafana -n istio-system --context kind-cluster1 --interactive=false || true
+      - kubectl delete service grafana -n istio-system --context kind-cluster1 --interactive=false || true
+      - kubectl delete configmap grafana -n istio-system --context kind-cluster1 --interactive=false || true
+      - kubectl delete configmap istio-grafana-dashboards -n istio-system --context kind-cluster1 --interactive=false || true
+      - kubectl delete configmap istio-services-grafana-dashboards -n istio-system --context kind-cluster1 --interactive=false || true
+      # Delete Prometheus resources
+      - kubectl delete deployment prometheus -n istio-system --context kind-cluster1 --interactive=false || true
+      - kubectl delete deployment prometheus -n istio-system --context kind-cluster2 --interactive=false || true
+      - kubectl delete deployment prometheus -n istio-system --context kind-cluster3 --interactive=false || true
+      - kubectl delete service prometheus -n istio-system --context kind-cluster1 --interactive=false || true
+      - kubectl delete service prometheus -n istio-system --context kind-cluster2 --interactive=false || true
+      - kubectl delete service prometheus -n istio-system --context kind-cluster3 --interactive=false || true
+      - kubectl delete configmap prometheus -n istio-system --context kind-cluster1 --interactive=false || true
+      - kubectl delete configmap prometheus -n istio-system --context kind-cluster2 --interactive=false || true
+      - kubectl delete configmap prometheus -n istio-system --context kind-cluster3 --interactive=false || true
+      - kubectl delete configmap prometheus-federation -n istio-system --context kind-cluster1 --interactive=false || true
+      - kubectl delete secret -l kiali.io/multiCluster=true -n istio-system --context kind-cluster1 --interactive=false || true
+      - kubectl delete namespace kiali-access-ns --context kind-cluster2 --interactive=false || true
+      - kubectl delete namespace kiali-access-ns --context kind-cluster3 --interactive=false || true
+      - kubectl delete clusterrole -l app.kubernetes.io/instance=kiali-remote-access --context kind-cluster2 --interactive=false || true
+      - kubectl delete clusterrole -l app.kubernetes.io/instance=kiali-remote-access --context kind-cluster3 --interactive=false || true
+      - kubectl delete clusterrolebinding kiali-remote-access --context kind-cluster2 --interactive=false || true
+      - kubectl delete clusterrolebinding kiali-remote-access --context kind-cluster3 --interactive=false || true
+      - rm -f kiali-prepare-remote-cluster.sh || true
+
   kiali-dashboard:
     desc: Open the Kiali dashboard
     cmds:
-      - istioctl dashboard kiali
+      - istioctl dashboard kiali --context kind-cluster1
+
+  grafana-dashboard:
+    desc: Open the Grafana dashboard
+    cmds:
+      - istioctl dashboard grafana --context kind-cluster1
