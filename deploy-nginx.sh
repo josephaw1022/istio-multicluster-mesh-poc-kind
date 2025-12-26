@@ -187,7 +187,7 @@ data:
     </head>
     <body>
         <div class="container">
-            <h1>🚀 Nginx is Running!</h1>
+            <h1>&#128640; Nginx is Running!</h1>
             <p>This nginx deployment is running on <span class="cluster">Cluster 2</span></p>
             <p>(Remote Cluster)</p>
         </div>
@@ -294,7 +294,7 @@ data:
     </head>
     <body>
         <div class="container">
-            <h1>🚀 Nginx is Running!</h1>
+            <h1>&#128640; Nginx is Running!</h1>
             <p>This nginx deployment is running on <span class="cluster">Cluster 3</span></p>
             <p>(Remote Cluster)</p>
         </div>
