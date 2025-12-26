@@ -58,97 +58,230 @@ CLUSTER3_PROMETHEUS_ADDRESS=$(kubectl --context=kind-cluster3 -n istio-system ge
 echo "Cluster2 Prometheus address: ${CLUSTER2_PROMETHEUS_ADDRESS}"
 echo "Cluster3 Prometheus address: ${CLUSTER3_PROMETHEUS_ADDRESS}"
 
-# Create federated Prometheus config for cluster1
-echo "Creating federated Prometheus configuration..."
-cat <<EOF | kubectl apply -f - --context kind-cluster1
+# Download the original Prometheus config and add federation jobs
+echo "Adding federation scrape configs to Prometheus..."
+curl -s https://raw.githubusercontent.com/istio/istio/release-1.28/samples/addons/prometheus.yaml > /tmp/prometheus-original.yaml
+
+# Extract just the prometheus.yml data from the ConfigMap
+ORIGINAL_CONFIG=$(grep -A 500 "prometheus.yml: |" /tmp/prometheus-original.yaml | sed -n '2,/^  [a-z]/p' | head -n -1)
+
+# Create a new ConfigMap with federation jobs added
+cat > /tmp/prometheus-federated.yaml <<EOF
 apiVersion: v1
 kind: ConfigMap
 metadata:
-  name: prometheus-federation
+  labels:
+    app.kubernetes.io/component: server
+    app.kubernetes.io/name: prometheus
+    app.kubernetes.io/instance: prometheus
+    app.kubernetes.io/version: v3.5.0
+    helm.sh/chart: prometheus-27.37.0
+    app.kubernetes.io/part-of: prometheus
+  name: prometheus
   namespace: istio-system
 data:
-  prometheus-federation.yml: |
-    - job_name: 'prometheus-cluster2'
+  allow-snippet-annotations: "false"
+  alerting_rules.yml: |
+    {}
+  alerts: |
+    {}
+  prometheus.yml: |
+    global:
+      evaluation_interval: 1m
+      scrape_interval: 15s
+      scrape_timeout: 10s
+    rule_files:
+    - /etc/config/recording_rules.yml
+    - /etc/config/alerting_rules.yml
+    - /etc/config/rules
+    - /etc/config/alerts
+    scrape_configs:
+    - job_name: prometheus
+      static_configs:
+      - targets:
+        - localhost:9090
+    # Federation jobs for multi-cluster metrics
+    - job_name: 'federate-cluster2'
       honor_labels: true
       metrics_path: '/federate'
       params:
         'match[]':
           - '{job=~".+"}'
       static_configs:
-        - targets:
-          - '${CLUSTER2_PROMETHEUS_ADDRESS}:9090'
+        - targets: ['${CLUSTER2_PROMETHEUS_ADDRESS}:9090']
           labels:
-            cluster: 'cluster2'
-    - job_name: 'prometheus-cluster3'
+            source_cluster: 'cluster2'
+    - job_name: 'federate-cluster3'
       honor_labels: true
       metrics_path: '/federate'
       params:
         'match[]':
           - '{job=~".+"}'
       static_configs:
-        - targets:
-          - '${CLUSTER3_PROMETHEUS_ADDRESS}:9090'
+        - targets: ['${CLUSTER3_PROMETHEUS_ADDRESS}:9090']
           labels:
-            cluster: 'cluster3'
+            source_cluster: 'cluster3'
+    - bearer_token_file: /var/run/secrets/kubernetes.io/serviceaccount/token
+      job_name: kubernetes-apiservers
+      kubernetes_sd_configs:
+      - role: endpoints
+      relabel_configs:
+      - action: keep
+        regex: default;kubernetes;https
+        source_labels:
+        - __meta_kubernetes_namespace
+        - __meta_kubernetes_service_name
+        - __meta_kubernetes_endpoint_port_name
+      scheme: https
+      tls_config:
+        ca_file: /var/run/secrets/kubernetes.io/serviceaccount/ca.crt
+    - bearer_token_file: /var/run/secrets/kubernetes.io/serviceaccount/token
+      job_name: kubernetes-nodes
+      kubernetes_sd_configs:
+      - role: node
+      relabel_configs:
+      - action: labelmap
+        regex: __meta_kubernetes_node_label_(.+)
+      - replacement: kubernetes.default.svc:443
+        target_label: __address__
+      - regex: (.+)
+        replacement: /api/v1/nodes/\$1/proxy/metrics
+        source_labels:
+        - __meta_kubernetes_node_name
+        target_label: __metrics_path__
+      scheme: https
+      tls_config:
+        ca_file: /var/run/secrets/kubernetes.io/serviceaccount/ca.crt
+    - bearer_token_file: /var/run/secrets/kubernetes.io/serviceaccount/token
+      job_name: kubernetes-nodes-cadvisor
+      kubernetes_sd_configs:
+      - role: node
+      relabel_configs:
+      - action: labelmap
+        regex: __meta_kubernetes_node_label_(.+)
+      - replacement: kubernetes.default.svc:443
+        target_label: __address__
+      - regex: (.+)
+        replacement: /api/v1/nodes/\$1/proxy/metrics/cadvisor
+        source_labels:
+        - __meta_kubernetes_node_name
+        target_label: __metrics_path__
+      scheme: https
+      tls_config:
+        ca_file: /var/run/secrets/kubernetes.io/serviceaccount/ca.crt
+    - honor_labels: true
+      job_name: kubernetes-service-endpoints
+      kubernetes_sd_configs:
+      - role: endpoints
+      relabel_configs:
+      - action: keep
+        regex: true
+        source_labels:
+        - __meta_kubernetes_service_annotation_prometheus_io_scrape
+      - action: drop
+        regex: true
+        source_labels:
+        - __meta_kubernetes_service_annotation_prometheus_io_scrape_slow
+      - action: replace
+        regex: (https?)
+        source_labels:
+        - __meta_kubernetes_service_annotation_prometheus_io_scheme
+        target_label: __scheme__
+      - action: replace
+        regex: (.+)
+        source_labels:
+        - __meta_kubernetes_service_annotation_prometheus_io_path
+        target_label: __metrics_path__
+      - action: replace
+        regex: (.+?)(?::\d+)?;(\d+)
+        replacement: \$1:\$2
+        source_labels:
+        - __address__
+        - __meta_kubernetes_service_annotation_prometheus_io_port
+        target_label: __address__
+      - action: labelmap
+        regex: __meta_kubernetes_service_annotation_prometheus_io_param_(.+)
+        replacement: __param_\$1
+      - action: labelmap
+        regex: __meta_kubernetes_service_label_(.+)
+      - action: replace
+        source_labels:
+        - __meta_kubernetes_namespace
+        target_label: namespace
+      - action: replace
+        source_labels:
+        - __meta_kubernetes_service_name
+        target_label: service
+      - action: replace
+        source_labels:
+        - __meta_kubernetes_pod_node_name
+        target_label: node
+    - honor_labels: true
+      job_name: kubernetes-pods
+      kubernetes_sd_configs:
+      - role: pod
+      relabel_configs:
+      - action: keep
+        regex: true
+        source_labels:
+        - __meta_kubernetes_pod_annotation_prometheus_io_scrape
+      - action: drop
+        regex: true
+        source_labels:
+        - __meta_kubernetes_pod_annotation_prometheus_io_scrape_slow
+      - action: replace
+        regex: (https?)
+        source_labels:
+        - __meta_kubernetes_pod_annotation_prometheus_io_scheme
+        target_label: __scheme__
+      - action: replace
+        regex: (.+)
+        source_labels:
+        - __meta_kubernetes_pod_annotation_prometheus_io_path
+        target_label: __metrics_path__
+      - action: replace
+        regex: (\d+);(([A-Fa-f0-9]{1,4}::?){1,7}[A-Fa-f0-9]{1,4})
+        replacement: '[\$2]:\$1'
+        source_labels:
+        - __meta_kubernetes_pod_annotation_prometheus_io_port
+        - __meta_kubernetes_pod_ip
+        target_label: __address__
+      - action: replace
+        regex: (\d+);((([0-9]+?)(\.|$)){4})
+        replacement: \$2:\$1
+        source_labels:
+        - __meta_kubernetes_pod_annotation_prometheus_io_port
+        - __meta_kubernetes_pod_ip
+        target_label: __address__
+      - action: labelmap
+        regex: __meta_kubernetes_pod_annotation_prometheus_io_param_(.+)
+        replacement: __param_\$1
+      - action: labelmap
+        regex: __meta_kubernetes_pod_label_(.+)
+      - action: replace
+        source_labels:
+        - __meta_kubernetes_namespace
+        target_label: namespace
+      - action: replace
+        source_labels:
+        - __meta_kubernetes_pod_name
+        target_label: pod
+      - action: drop
+        regex: Pending|Succeeded|Failed|Completed
+        source_labels:
+        - __meta_kubernetes_pod_phase
+      - action: replace
+        source_labels:
+        - __meta_kubernetes_pod_node_name
+        target_label: node
+  recording_rules.yml: |
+    {}
+  rules: |
+    {}
 EOF
 
-# Patch the Prometheus deployment to include the federation config
-echo "Patching Prometheus to include federation scrape configs..."
-kubectl patch deployment prometheus -n istio-system --context kind-cluster1 --type='json' -p='[
-  {
-    "op": "add",
-    "path": "/spec/template/spec/volumes/-",
-    "value": {
-      "name": "prometheus-federation",
-      "configMap": {
-        "name": "prometheus-federation"
-      }
-    }
-  },
-  {
-    "op": "add",
-    "path": "/spec/template/spec/containers/0/volumeMounts/-",
-    "value": {
-      "name": "prometheus-federation",
-      "mountPath": "/etc/prometheus-federation"
-    }
-  }
-]'
-
-# Update Prometheus config to include federation
-kubectl get configmap prometheus -n istio-system --context kind-cluster1 -o yaml > /tmp/prometheus-cm.yaml
-if ! grep -q "prometheus-cluster2" /tmp/prometheus-cm.yaml; then
-  echo "Adding federation scrape configs to Prometheus..."
-  kubectl patch configmap prometheus -n istio-system --context kind-cluster1 --type='json' -p="[
-    {
-      \"op\": \"add\",
-      \"path\": \"/data/prometheus.yml\",
-      \"value\": \"$(kubectl get configmap prometheus -n istio-system --context kind-cluster1 -o jsonpath='{.data.prometheus\.yml}' | sed '/^scrape_configs:/a\\
-  - job_name: prometheus-cluster2\\
-    honor_labels: true\\
-    metrics_path: /federate\\
-    params:\\
-      match[]:\\
-        - {job=~\".+\"}\\
-    static_configs:\\
-      - targets:\\
-          - ${CLUSTER2_PROMETHEUS_ADDRESS}:9090\\
-        labels:\\
-          cluster: cluster2\\
-  - job_name: prometheus-cluster3\\
-    honor_labels: true\\
-    metrics_path: /federate\\
-    params:\\
-      match[]:\\
-        - {job=~\".+\"}\\
-    static_configs:\\
-      - targets:\\
-          - ${CLUSTER3_PROMETHEUS_ADDRESS}:9090\\
-        labels:\\
-          cluster: cluster3' | sed 's/"/\\"/g' | tr '\n' '\\n')\"
-    }
-  ]" 2>/dev/null || echo "Federation config may already exist or requires manual update"
-fi
+# Apply the federated config to cluster1
+kubectl apply -f /tmp/prometheus-federated.yaml --context kind-cluster1
 
 # Restart Prometheus to pick up the new config
 echo "Restarting Prometheus to apply federation config..."
@@ -166,6 +299,12 @@ kubectl rollout status deployment/grafana -n istio-system --context kind-cluster
 
 # Configure Kiali for multicluster (must be done before installing Kiali)
 echo "Configuring Kiali for multicluster..."
+
+# Download the Kiali remote cluster preparation script if it doesn't exist
+if [ ! -f kiali-prepare-remote-cluster.sh ]; then
+  echo "Downloading kiali-prepare-remote-cluster.sh..."
+  curl -sL -o kiali-prepare-remote-cluster.sh https://raw.githubusercontent.com/kiali/kiali/master/hack/istio/multicluster/kiali-prepare-remote-cluster.sh
+fi
 chmod +x kiali-prepare-remote-cluster.sh
 
 # Get the actual container IPs for remote clusters (not localhost)
@@ -176,7 +315,20 @@ CLUSTER3_API_SERVER="https://$(podman network inspect kind | jq -r '.[0].contain
 echo "Cluster2 API server: ${CLUSTER2_API_SERVER}"
 echo "Cluster3 API server: ${CLUSTER3_API_SERVER}"
 
-# Install Kiali via Helm
+# Prepare remote clusters BEFORE installing Kiali
+echo "Preparing cluster2 as remote cluster..."
+./kiali-prepare-remote-cluster.sh \
+  --kiali-cluster-context kind-cluster1 \
+  --remote-cluster-context kind-cluster2 \
+  --remote-cluster-url "${CLUSTER2_API_SERVER}"
+
+echo "Preparing cluster3 as remote cluster..."
+./kiali-prepare-remote-cluster.sh \
+  --kiali-cluster-context kind-cluster1 \
+  --remote-cluster-context kind-cluster3 \
+  --remote-cluster-url "${CLUSTER3_API_SERVER}"
+
+# Install Kiali via Helm with remote cluster configuration
 echo "Installing Kiali via Helm..."
 helm upgrade --install --namespace istio-system \
   --set auth.strategy=anonymous \
@@ -185,23 +337,16 @@ helm upgrade --install --namespace istio-system \
   --set external_services.grafana.enabled=true \
   --set external_services.grafana.in_cluster_url=http://grafana.istio-system.svc.cluster.local:3000 \
   --set external_services.grafana.url=http://grafana.istio-system.svc.cluster.local:3000 \
+  --set clustering.enabled=true \
+  --set clustering.clusters[0].name=cluster1 \
+  --set clustering.clusters[0].isKialiHome=true \
+  --set clustering.clusters[1].name=kind-cluster2 \
+  --set clustering.clusters[1].secretName=kiali-remote-cluster-secret-kind-cluster2 \
+  --set clustering.clusters[2].name=kind-cluster3 \
+  --set clustering.clusters[2].secretName=kiali-remote-cluster-secret-kind-cluster3 \
   --repo https://kiali.org/helm-charts \
   kiali-server kiali-server \
   --kube-context kind-cluster1
-
-
-echo "Adding cluster2 as remote cluster to Kiali..."
-./kiali-prepare-remote-cluster.sh \
-  --kiali-cluster-context kind-cluster1 \
-  --remote-cluster-context kind-cluster2 \
-  --remote-cluster-url "${CLUSTER2_API_SERVER}"
-
-echo "Adding cluster3 as remote cluster to Kiali..."
-./kiali-prepare-remote-cluster.sh \
-  --kiali-cluster-context kind-cluster1 \
-  --remote-cluster-context kind-cluster3 \
-  --remote-cluster-url "${CLUSTER3_API_SERVER}"
-
 
 echo "Waiting for Kiali to be ready..."
 kubectl rollout status deployment/kiali -n istio-system --context kind-cluster1 --timeout=120s
