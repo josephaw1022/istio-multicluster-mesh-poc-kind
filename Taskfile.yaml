@@ -81,7 +81,6 @@ tasks:
       - kubectl delete clusterrole -l app.kubernetes.io/instance=kiali-remote-access --context kind-cluster3 --interactive=false || true
       - kubectl delete clusterrolebinding kiali-remote-access --context kind-cluster2 --interactive=false || true
       - kubectl delete clusterrolebinding kiali-remote-access --context kind-cluster3 --interactive=false || true
-      - rm -f kiali-prepare-remote-cluster.sh || true
       # Uninstall Istio from all clusters
       - istioctl uninstall --purge -y --context kind-cluster3 || true
       - istioctl uninstall --purge -y --context kind-cluster2 || true
@@ -160,7 +159,6 @@ tasks:
       - kubectl delete clusterrole -l app.kubernetes.io/instance=kiali-remote-access --context kind-cluster3 --interactive=false || true
       - kubectl delete clusterrolebinding kiali-remote-access --context kind-cluster2 --interactive=false || true
       - kubectl delete clusterrolebinding kiali-remote-access --context kind-cluster3 --interactive=false || true
-      - rm -f kiali-prepare-remote-cluster.sh || true
 
   kiali-dashboard:
     desc: Open the Kiali dashboard
